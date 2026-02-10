@@ -1,0 +1,6 @@
+{
+  "name": "Quick Timer Card",
+  "content_type": "lovelace",
+  "render_readme": true,
+  "filename": "quick-timer-card.js"
+}
