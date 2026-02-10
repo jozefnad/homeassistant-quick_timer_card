@@ -1146,7 +1146,7 @@ window.customCards.push({
   name: 'Quick Timer Card',
   description: 'Professional timer card with advanced interactions, dynamic visuals, and intelligent content.',
   preview: true,
-  documentationURL: 'https://github.com/jozefnad/homeassitant-quick_timer',
+  documentationURL: 'https://github.com/jozefnad/homeassistant-quick_timer',
 });
 window.customCards.push({
   type: 'quick-timer-overview-card',

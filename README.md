@@ -1,12 +1,12 @@
-# Quick Timer Card
+﻿# Quick Timer Card
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/release/jozefnad/homeassitant-quick_timer_card.svg)](https://github.com/jozefnad/homeassitant-quick_timer_card/releases)
-[![License](https://img.shields.io/github/license/jozefnad/homeassitant-quick_timer_card.svg)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/release/jozefnad/homeassistant-quick_timer_card.svg)](https://github.com/jozefnad/homeassistant-quick_timer_card/releases)
+[![License](https://img.shields.io/github/license/jozefnad/homeassistant-quick_timer_card.svg)](LICENSE)
 
 **Quick Timer Card** is a custom Lovelace card for Home Assistant that provides an elegant UI for scheduling one-time actions with countdown timers.
 
-> ⚠️ **Requirement:** This card requires the [Quick Timer integration](https://github.com/jozefnad/homeassitant-quick_timer) to be installed and configured.
+> ⚠️ **Requirement:** This card requires the [Quick Timer integration](https://github.com/jozefnad/homeassistant-quick_timer) to be installed and configured.
 
 ## ✨ Features
 
@@ -17,6 +17,28 @@
 - 🔧 **Advanced editor** - Comprehensive configuration options
 - 💉 **Dialog injection** - Automatic timer panel in entity dialogs
 
+## 🖼️ Screenshots
+
+### Card examples
+
+![Quick Timer Card examples](screens/cards.png)
+
+### Configuration
+
+![Card configuration](screens/card_configuration.png)
+
+![Configuration interactions](screens/card_configuration_interactions.png)
+
+### Dialog injection
+
+![Dialog mod](screens/dialog_mod.png)
+
+![Injected mod](screens/Injected_mod.png)
+
+### Scheduled timers
+
+![Scheduled cards](screens/scheduled_cards.png)
+
 ## 📦 Installation
 
 ### HACS (Recommended)
@@ -25,7 +47,7 @@
 2. Click on **Frontend**
 3. Click the menu (⋮) in the top right corner
 4. Select **Custom repositories**
-5. Add URL: `https://github.com/jozefnad/homeassitant-quick_timer_card`
+5. Add URL: `https://github.com/jozefnad/homeassistant-quick_timer_card`
 6. Category: **Lovelace**
 7. Click **Add**
 8. Search for "Quick Timer Card" and click **Download**
@@ -33,7 +55,7 @@
 
 ### Manual Installation
 
-1. Download the latest release from [Releases](https://github.com/jozefnad/homeassitant-quick_timer_card/releases)
+1. Download the latest release from [Releases](https://github.com/jozefnad/homeassistant-quick_timer_card/releases)
 2. Copy `quick-timer-card.js` to your `/config/www/` folder
 3. Go to **Settings** → **Dashboards** → **Resources** (⋮ menu)
 4. Click **+ Add Resource**
@@ -72,15 +94,16 @@ mode: compact  # or 'full'
 | `notify_ha` | bool | ❌ | false | Enable HA notifications by default |
 | `notify_mobile` | bool | ❌ | false | Enable mobile notifications by default |
 
-## � Troubleshooting
+## 🛠️ Troubleshooting
 
 ### Card not showing
-- Ensure the [Quick Timer integration](https://github.com/jozefnad/homeassitant-quick_timer) is installed first
+
+- Ensure the [Quick Timer integration](https://github.com/jozefnad/homeassistant-quick_timer) is installed first
 - Check that the resource is properly added in **Settings** → **Dashboards** → **Resources**
 - Clear browser cache (Ctrl+F5)
 - Check browser console for JavaScript errors
 
-## �📝 License
+## 📝 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
@@ -94,4 +117,4 @@ If you like this project, please give it a star on GitHub!
 
 ---
 
-**See also:** [Quick Timer Integration](https://github.com/jozefnad/homeassitant-quick_timer) - The backend integration required for this card to work.
+**See also:** [Quick Timer Integration](https://github.com/jozefnad/homeassistant-quick_timer) - The backend integration required for this card to work.
