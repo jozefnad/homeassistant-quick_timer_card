@@ -1,9 +1,10 @@
 /**
- * Quick Timer Card v1.0.0
+ * Quick Timer Card v1.1.0
  * A professional Lovelace card for scheduling one-time actions on Home Assistant entities.
  * Features: Advanced interactions, dynamic visuals, intelligent content, modular editor
+ *           Absolute time support, backend-synced persistence, history presets
  * 
- * @version 1.0.0
+ * @version 1.1.0
  * @author Quick Timer
  */
 
@@ -22,7 +23,11 @@ const css = LitElement.prototype.css;
 // Constants
 // ============================================
 
-const CARD_VERSION = '1.0.0';
+const CARD_VERSION = '1.1.0';
+
+// Time modes
+const TIME_MODE_RELATIVE = 'relative';
+const TIME_MODE_ABSOLUTE = 'absolute';
 
 const DEFAULT_CONFIG = {
   entity: '',
@@ -32,6 +37,7 @@ const DEFAULT_CONFIG = {
   default_delay: 15,
   default_unit: 'minutes',
   default_action: 'off',
+  default_time_mode: TIME_MODE_RELATIVE,
   mode: 'compact',
   show_state: true,
   show_badge: true,
@@ -247,6 +253,90 @@ function getRelativeTime(timestamp) {
   if (minutes > 0) return `${minutes}m ago`;
   return `${seconds}s ago`;
 }
+
+// Format absolute time for display
+function formatAbsoluteTime(timeStr) {
+  if (!timeStr) return '';
+  return timeStr;
+}
+
+// Get current time in HH:MM format
+function getCurrentTimeString() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
+// Get default absolute time (current time + 30 min)
+function getDefaultAbsoluteTime() {
+  const now = new Date();
+  now.setMinutes(now.getMinutes() + 30);
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
+// Format history entry for display
+function formatHistoryEntry(entry) {
+  const actionLabel = getActionLabel(entry.action);
+  if (entry.time_mode === TIME_MODE_ABSOLUTE) {
+    return `${actionLabel} at ${entry.at_time}`;
+  } else {
+    const unitShort = { seconds: 's', minutes: 'm', hours: 'h' }[entry.unit] || 'm';
+    return `${actionLabel} in ${entry.delay}${unitShort}`;
+  }
+}
+
+// ============================================
+// Preferences Manager (synced with backend via sensor)
+// ============================================
+
+class PreferencesManager {
+  constructor() {
+    this._cache = {};
+  }
+
+  getFromSensor(hass, entityId) {
+    if (!hass || !entityId) return {};
+    const monitor = hass.states['sensor.quick_timer_monitor'];
+    // console.log('[Quick Timer] Sensor state:', monitor?.state, 'Preferences:', monitor?.attributes?.preferences);
+    if (monitor?.attributes?.preferences?.[entityId]) {
+      this._cache[entityId] = monitor.attributes.preferences[entityId];
+      return this._cache[entityId];
+    }
+    return this._cache[entityId] || {};
+  }
+
+  async savePreferences(hass, entityId, preferences) {
+    if (!hass || !entityId) return;
+
+    // Update local cache immediately for responsiveness
+    this._cache[entityId] = { ...this._cache[entityId], ...preferences };
+
+    // Save to backend (this will update the sensor)
+    try {
+      console.log('[Quick Timer] Saving preferences to backend:', entityId, preferences);
+      await hass.callService('quick_timer', 'set_preferences', {
+        entity_id: entityId,
+        preferences: preferences,
+      });
+      // console.log('[Quick Timer] Preferences saved successfully');
+    } catch (e) {
+      console.error('[Quick Timer] Failed to save preferences to backend:', e);
+    }
+  }
+
+  getFromCache(entityId) {
+    return this._cache[entityId] || {};
+  }
+
+  updateCacheFromSensor(hass) {
+    if (!hass) return;
+    const monitor = hass.states['sensor.quick_timer_monitor'];
+    if (monitor?.attributes?.preferences) {
+      this._cache = { ...this._cache, ...monitor.attributes.preferences };
+    }
+  }
+}
+
+const preferencesManager = new PreferencesManager();
 
 // ============================================
 // Quick Timer Card Editor
@@ -563,6 +653,8 @@ class QuickTimerCard extends LitElement {
       _delay: { type: Number },
       _unit: { type: String },
       _action: { type: String },
+      _timeMode: { type: String },
+      _atTime: { type: String },
       _isScheduled: { type: Boolean },
       _remainingSeconds: { type: Number },
       _endTimestamp: { type: Number },
@@ -570,6 +662,9 @@ class QuickTimerCard extends LitElement {
       _showSettings: { type: Boolean },
       _notifyHa: { type: Boolean },
       _notifyMobile: { type: Boolean },
+      _history: { type: Array },
+      _showHistory: { type: Boolean },
+      _prefsLoaded: { type: Boolean },
     };
   }
 
@@ -578,6 +673,8 @@ class QuickTimerCard extends LitElement {
     this._delay = 15;
     this._unit = 'minutes';
     this._action = 'off';
+    this._timeMode = TIME_MODE_RELATIVE;
+    this._atTime = getDefaultAbsoluteTime();
     this._isScheduled = false;
     this._remainingSeconds = 0;
     this._endTimestamp = 0;
@@ -586,6 +683,10 @@ class QuickTimerCard extends LitElement {
     this._showSettings = false;
     this._notifyHa = false;
     this._notifyMobile = false;
+    this._history = [];
+    this._showHistory = false;
+    this._prefsLoaded = false;
+    this._lastSaveTimestamp = 0; // Track when we last saved to avoid race conditions
     this._pressTimer = null;
     this._tapCount = 0;
     this._tapTimer = null;
@@ -638,7 +739,8 @@ class QuickTimerCard extends LitElement {
       .timer-row { display: flex; gap: 8px; align-items: center; }
       .timer-input { flex: 1; padding: 10px 14px; border: 1px solid var(--divider-color); border-radius: 10px; background: var(--input-fill-color, var(--secondary-background-color)); color: var(--primary-text-color); font-size: 16px; min-width: 0; box-sizing: border-box; }
       .timer-input:focus { outline: none; border-color: var(--primary-color); }
-      .timer-select { padding: 10px 14px; border: 1px solid var(--divider-color); border-radius: 10px; background: var(--input-fill-color, var(--secondary-background-color)); color: var(--primary-text-color); font-size: 14px; cursor: pointer; min-width: 100px; }
+      .timer-select { padding: 10px 14px; border: 1px solid var(--divider-color); border-radius: 10px; background: var(--input-fill-color, var(--secondary-background-color)); color: var(--primary-text-color); font-size: 14px; cursor: pointer; min-width: 100px; color-scheme: light dark; }
+      .timer-select option { background: var(--card-background-color, var(--secondary-background-color)); color: var(--primary-text-color); }
       .timer-notify { display: flex; gap: 8px; align-items: center; }
       .notify-icon-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--divider-color); border-radius: 50%; background: transparent; color: var(--secondary-text-color); cursor: pointer; transition: all 0.2s; }
       .notify-icon-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
@@ -664,6 +766,21 @@ class QuickTimerCard extends LitElement {
       .settings-btn-cancel { background: var(--secondary-background-color); color: var(--primary-text-color); }
       .settings-btn-save { background: var(--primary-color); color: white; }
       .settings-btn:hover { opacity: 0.9; }
+      .timer-mode-row { display: flex; gap: 8px; margin-bottom: 12px; }
+      .mode-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 16px; border: 1px solid var(--divider-color); border-radius: 10px; background: transparent; color: var(--primary-text-color); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+      .mode-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+      .mode-btn.active { background: var(--primary-color); color: white; border-color: var(--primary-color); }
+      .timer-row-absolute { align-items: center; }
+      .timer-select-action { min-width: 100px; }
+      .timer-input-time { min-width: 100px; text-align: center; }
+      .history-toggle { --mdc-icon-size: 20px; color: var(--secondary-text-color); cursor: pointer; padding: 6px; border-radius: 50%; transition: all 0.2s; }
+      .history-toggle:hover { background: var(--secondary-background-color); color: var(--primary-text-color); }
+      .history-toggle.active { color: var(--primary-color); }
+      .history-section { margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--divider-color); }
+      .history-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--secondary-text-color); margin-bottom: 8px; }
+      .history-items { display: flex; flex-wrap: wrap; gap: 6px; }
+      .history-chip { padding: 6px 12px; border: 1px solid var(--primary-color); border-radius: 16px; background: rgba(var(--rgb-primary-color), 0.1); color: var(--primary-color); font-size: 12px; cursor: pointer; transition: all 0.2s; }
+      .history-chip:hover { background: var(--primary-color); color: white; }
       .ripple { position: absolute; border-radius: 50%; background: rgba(var(--rgb-primary-color), 0.3); transform: scale(0); animation: ripple 0.5s ease-out; pointer-events: none; }
       @keyframes ripple { to { transform: scale(4); opacity: 0; } }
     `;
@@ -675,8 +792,11 @@ class QuickTimerCard extends LitElement {
     this._delay = this.config.default_delay || 15;
     this._unit = this.config.default_unit || 'minutes';
     this._action = this.config.default_action || getDefaultActionForDomain(config.entity);
+    this._timeMode = this.config.default_time_mode || TIME_MODE_RELATIVE;
+    this._atTime = getDefaultAbsoluteTime();
     this._notifyHa = this.config.notify_ha === true;
     this._notifyMobile = this.config.notify_mobile === true;
+    this._prefsLoaded = false;
   }
 
   getCardSize() { return this.config?.mode === 'compact' ? 1 : 4; }
@@ -700,7 +820,64 @@ class QuickTimerCard extends LitElement {
   }
 
   updated(changedProperties) {
-    if (changedProperties.has('hass')) this._checkScheduledTask();
+    if (changedProperties.has('hass')) {
+      this._checkScheduledTask();
+      this._loadPreferencesFromSensor();
+    }
+  }
+
+  _loadPreferencesFromSensor() {
+    if (!this.hass || !this.config?.entity) return;
+    
+    // Skip loading from sensor for 2 seconds after saving to avoid race condition
+    // (sensor may still have old data while backend is processing the save)
+    const timeSinceLastSave = Date.now() - this._lastSaveTimestamp;
+    if (timeSinceLastSave < 2000) {
+      console.log('[Quick Timer] Skipping sensor load - recent save in progress');
+      return;
+    }
+    
+    // Always sync from sensor (for cross-device sync)
+    preferencesManager.updateCacheFromSensor(this.hass);
+    const prefs = preferencesManager.getFromSensor(this.hass, this.config.entity);
+    
+    // console.log('[Quick Timer] Loading preferences from sensor for', this.config.entity, ':', prefs);
+    
+    if (prefs && Object.keys(prefs).length > 0) {
+      // Check if we should update (first load OR settings dialog is closed)
+      // We DON'T update while user is actively editing in settings dialog
+      if (!this._prefsLoaded || !this._showSettings) {
+        // Only apply if values are different (to avoid overwriting user's current edits)
+        if (!this._showSettings) {
+          if (prefs.last_action && prefs.last_action !== this._action) this._action = prefs.last_action;
+          if (prefs.last_time_mode && prefs.last_time_mode !== this._timeMode) this._timeMode = prefs.last_time_mode;
+          if (prefs.last_delay && prefs.last_delay !== this._delay) this._delay = prefs.last_delay;
+          if (prefs.last_unit && prefs.last_unit !== this._unit) this._unit = prefs.last_unit;
+          if (prefs.last_at_time && prefs.last_at_time !== this._atTime) this._atTime = prefs.last_at_time;
+          if (prefs.notify_ha !== undefined && prefs.notify_ha !== this._notifyHa) this._notifyHa = prefs.notify_ha;
+          if (prefs.notify_mobile !== undefined && prefs.notify_mobile !== this._notifyMobile) this._notifyMobile = prefs.notify_mobile;
+        }
+        this._prefsLoaded = true;
+        // console.log('[Quick Timer] Applied preferences: action=', this._action, 'timeMode=', this._timeMode, 'atTime=', this._atTime);
+      }
+      // Always update history from sensor (it may have been updated from another device)
+      if (prefs.history) this._history = prefs.history;
+    }
+  }
+
+  _savePreferences() {
+    if (!this.hass || !this.config?.entity) return;
+    // Mark timestamp to prevent race condition - ignore sensor updates for 2 seconds after save
+    this._lastSaveTimestamp = Date.now();
+    preferencesManager.savePreferences(this.hass, this.config.entity, {
+      last_action: this._action,
+      last_time_mode: this._timeMode,
+      last_delay: this._delay,
+      last_unit: this._unit,
+      last_at_time: this._atTime,
+      notify_ha: this._notifyHa,
+      notify_mobile: this._notifyMobile,
+    });
   }
 
   _checkScheduledTask() {
@@ -779,15 +956,27 @@ class QuickTimerCard extends LitElement {
     this._loading = true;
     this.requestUpdate();
     try {
-      await this.hass.callService('quick_timer', 'run_action', {
+      const serviceData = {
         entity_id: this.config.entity,
-        delay: this._delay,
-        unit: this._unit,
         action: this._action,
         run_now: runNow,
         notify_ha: this._notifyHa,
         notify_mobile: this._notifyMobile,
-      });
+        time_mode: this._timeMode,
+      };
+
+      if (this._timeMode === TIME_MODE_ABSOLUTE) {
+        serviceData.at_time = this._atTime;
+      } else {
+        serviceData.delay = this._delay;
+        serviceData.unit = this._unit;
+      }
+
+      await this.hass.callService('quick_timer', 'run_action', serviceData);
+      
+      // Save preferences after successful schedule
+      this._savePreferences();
+      
       if (navigator.vibrate) navigator.vibrate(50);
     } catch (e) { console.error('[Quick Timer] Schedule failed:', e); }
     finally { this._loading = false; this.requestUpdate(); }
@@ -858,11 +1047,19 @@ class QuickTimerCard extends LitElement {
     const info = this._getEntityInfo();
     if (this._isScheduled) return html`<span class="highlight">${getActionLabel(this._action)}</span> in ${formatCountdownShort(this._remainingSeconds)}`;
     switch (this.config.secondary_info) {
-      case 'timer': return html`<span class="highlight">${getActionLabel(this._action)}</span> in ${this._delay} ${getUnitLabel(this._unit, true)}`;
+      case 'timer': 
+        if (this._timeMode === TIME_MODE_ABSOLUTE) {
+          return html`<span class="highlight">${getActionLabel(this._action)}</span> at ${this._atTime}`;
+        }
+        return html`<span class="highlight">${getActionLabel(this._action)}</span> in ${this._delay} ${getUnitLabel(this._unit, true)}`;
       case 'state': return info.state === 'on' ? 'On' : info.state === 'off' ? 'Off' : info.state;
       case 'action': return getActionLabel(this._action);
       case 'none': return '';
-      default: return html`<span class="highlight">${getActionLabel(this._action)}</span> in ${this._delay} ${getUnitLabel(this._unit, true)}`;
+      default: 
+        if (this._timeMode === TIME_MODE_ABSOLUTE) {
+          return html`<span class="highlight">${getActionLabel(this._action)}</span> at ${this._atTime}`;
+        }
+        return html`<span class="highlight">${getActionLabel(this._action)}</span> in ${this._delay} ${getUnitLabel(this._unit, true)}`;
     }
   }
 
@@ -878,6 +1075,7 @@ class QuickTimerCard extends LitElement {
     const info = this._getEntityInfo();
     const presets = { seconds: [30, 60, 120, 300], minutes: [5, 15, 30, 60], hours: [1, 2, 4, 8] };
     const domainActions = getActionsForDomain(this.config.entity);
+    const isAbsoluteMode = this._timeMode === TIME_MODE_ABSOLUTE;
 
     return html`
       <div class="settings-overlay" @click=${(e) => e.target === e.currentTarget && this._closeSettings()}>
@@ -888,31 +1086,83 @@ class QuickTimerCard extends LitElement {
               <h3>${info.name}</h3>
               <div class="subtitle">${info.state === 'on' ? 'On' : 'Off'}</div>
             </div>
+            ${this._history.length > 0 ? html`
+              <ha-icon class="history-toggle ${this._showHistory ? 'active' : ''}" icon="mdi:history" 
+                @click=${() => { this._showHistory = !this._showHistory; this.requestUpdate(); }}
+                title="History"></ha-icon>
+            ` : ''}
             <ha-icon class="settings-close" icon="mdi:close" @click=${this._closeSettings}></ha-icon>
           </div>
-          <form @submit=${this._saveSettings}>
-            <div class="timer-controls">
-              <div class="timer-chips">
-                ${presets[this._unit].map(val => html`
-                  <button type="button" class="timer-chip ${this._delay === val ? 'active' : ''}" @click=${() => { this._delay = val; this.requestUpdate(); }}>${val}${getUnitLabel(this._unit, true).charAt(0)}</button>
+          
+          ${this._showHistory && this._history.length > 0 ? html`
+            <div class="history-section">
+              <div class="history-title">Recent</div>
+              <div class="history-items">
+                ${this._history.slice(0, 3).map(entry => html`
+                  <button class="history-chip" @click=${() => this._applyHistoryEntry(entry)}>
+                    ${formatHistoryEntry(entry)}
+                  </button>
                 `)}
               </div>
-              <div class="timer-row">
-                <input type="number" name="delay" class="timer-input" .value=${String(this._delay)} min="1">
-                <select name="unit" class="timer-select" @change=${(e) => { this._unit = e.target.value; this.requestUpdate(); }}>
-                  <option value="seconds" ?selected=${this._unit === 'seconds'}>Seconds</option>
-                  <option value="minutes" ?selected=${this._unit === 'minutes'}>Minutes</option>
-                  <option value="hours" ?selected=${this._unit === 'hours'}>Hours</option>
-                </select>
-                <select name="action" class="timer-select">
-                  ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
-                </select>
+            </div>
+          ` : ''}
+          
+          <form @submit=${this._saveSettings}>
+            <div class="timer-controls">
+              <!-- Time Mode Toggle -->
+              <div class="timer-mode-row">
+                <button type="button" class="mode-btn ${!isAbsoluteMode ? 'active' : ''}" 
+                  @click=${() => { this._timeMode = TIME_MODE_RELATIVE; this._savePreferences(); this.requestUpdate(); }}>
+                  <ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 16px;"></ha-icon>
+                  Delay
+                </button>
+                <button type="button" class="mode-btn ${isAbsoluteMode ? 'active' : ''}" 
+                  @click=${() => { this._timeMode = TIME_MODE_ABSOLUTE; this._savePreferences(); this.requestUpdate(); }}>
+                  <ha-icon icon="mdi:clock-outline" style="--mdc-icon-size: 16px;"></ha-icon>
+                  Time
+                </button>
               </div>
+              
+              ${!isAbsoluteMode ? html`
+                <!-- Relative Time Mode -->
+                <div class="timer-chips">
+                  ${presets[this._unit].map(val => html`
+                    <button type="button" class="timer-chip ${this._delay === val ? 'active' : ''}" 
+                      @click=${() => { this._delay = val; this._savePreferences(); this.requestUpdate(); }}>
+                      ${val}${getUnitLabel(this._unit, true).charAt(0)}
+                    </button>
+                  `)}
+                </div>
+                <div class="timer-row">
+                  <input type="number" name="delay" class="timer-input" .value=${String(this._delay)} min="1"
+                    @input=${(e) => { this._delay = parseInt(e.target.value, 10) || 15; this._savePreferences(); }}>
+                  <select name="unit" class="timer-select" @change=${(e) => { this._unit = e.target.value; this._savePreferences(); this.requestUpdate(); }}>
+                    <option value="seconds" ?selected=${this._unit === 'seconds'}>Seconds</option>
+                    <option value="minutes" ?selected=${this._unit === 'minutes'}>Minutes</option>
+                    <option value="hours" ?selected=${this._unit === 'hours'}>Hours</option>
+                  </select>
+                  <select name="action" class="timer-select" @change=${(e) => { this._action = e.target.value; this._savePreferences(); }}>
+                    ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
+                  </select>
+                </div>
+              ` : html`
+                <!-- Absolute Time Mode - Time input first, then action -->
+                <div class="timer-row timer-row-absolute">
+                  <input type="time" name="atTime" class="timer-input timer-input-time" .value=${this._atTime}
+                    @input=${(e) => { this._atTime = e.target.value; this._savePreferences(); }}>
+                  <select name="action" class="timer-select timer-select-action" @change=${(e) => { this._action = e.target.value; this._savePreferences(); }}>
+                    ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
+                  </select>
+                </div>
+              `}
+              
               <div class="timer-notify">
-                <button type="button" class="notify-icon-btn ${this._notifyHa ? 'active' : ''}" @click=${() => { this._notifyHa = !this._notifyHa; this.requestUpdate(); }} title="HA Notification">
+                <button type="button" class="notify-icon-btn ${this._notifyHa ? 'active' : ''}" 
+                  @click=${() => { this._notifyHa = !this._notifyHa; this._savePreferences(); this.requestUpdate(); }} title="HA Notification">
                   <ha-icon icon="mdi:bell${this._notifyHa ? '' : '-off-outline'}"></ha-icon>
                 </button>
-                <button type="button" class="notify-icon-btn ${this._notifyMobile ? 'active' : ''}" @click=${() => { this._notifyMobile = !this._notifyMobile; this.requestUpdate(); }} title="Mobile Notification">
+                <button type="button" class="notify-icon-btn ${this._notifyMobile ? 'active' : ''}" 
+                  @click=${() => { this._notifyMobile = !this._notifyMobile; this._savePreferences(); this.requestUpdate(); }} title="Mobile Notification">
                   <ha-icon icon="mdi:cellphone${this._notifyMobile ? '-message' : ''}"></ha-icon>
                 </button>
               </div>
@@ -925,6 +1175,20 @@ class QuickTimerCard extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  _applyHistoryEntry(entry) {
+    this._action = entry.action;
+    this._timeMode = entry.time_mode || TIME_MODE_RELATIVE;
+    if (entry.time_mode === TIME_MODE_ABSOLUTE) {
+      this._atTime = entry.at_time;
+    } else {
+      this._delay = entry.delay;
+      this._unit = entry.unit;
+    }
+    this._showHistory = false;
+    this._savePreferences();
+    this.requestUpdate();
   }
 
   _renderCompactMode() {
@@ -958,14 +1222,33 @@ class QuickTimerCard extends LitElement {
     const color = this._getColor();
     const domainActions = getActionsForDomain(this.config.entity);
     const presets = { seconds: [30, 60, 120, 300], minutes: [5, 15, 30, 60], hours: [1, 2, 4, 8] };
+    const isAbsoluteMode = this._timeMode === TIME_MODE_ABSOLUTE;
 
     return html`
       <ha-card class="full" style="--icon-color: ${color};">
         <div class="header">
           <ha-icon icon="${info.icon}"></ha-icon>
           <h2>${this.config.name || 'Quick Timer'}</h2>
+          ${this._history.length > 0 ? html`
+            <ha-icon class="history-toggle ${this._showHistory ? 'active' : ''}" icon="mdi:history" 
+              @click=${() => { this._showHistory = !this._showHistory; this.requestUpdate(); }}
+              title="History"></ha-icon>
+          ` : ''}
         </div>
         <div class="entity-name">${info.name} <span class="entity-state ${info.state}">${info.state}</span></div>
+
+        ${this._showHistory && this._history.length > 0 ? html`
+          <div class="history-section">
+            <div class="history-title">Recent</div>
+            <div class="history-items">
+              ${this._history.slice(0, 3).map(entry => html`
+                <button class="history-chip" @click=${() => this._applyHistoryEntry(entry)}>
+                  ${formatHistoryEntry(entry)}
+                </button>
+              `)}
+            </div>
+          </div>
+        ` : ''}
 
         ${this._isScheduled ? html`
           <div class="countdown-container">
@@ -979,25 +1262,60 @@ class QuickTimerCard extends LitElement {
           </div>
         ` : html`
           <div class="timer-controls">
-            <div class="timer-chips">
-              ${presets[this._unit].map(val => html`<button type="button" class="timer-chip ${this._delay === val ? 'active' : ''}" @click=${() => { this._delay = val; this.requestUpdate(); }}>${val}${getUnitLabel(this._unit, true).charAt(0)}</button>`)}
+            <!-- Time Mode Toggle -->
+            <div class="timer-mode-row">
+              <button type="button" class="mode-btn ${!isAbsoluteMode ? 'active' : ''}" 
+                @click=${() => { this._timeMode = TIME_MODE_RELATIVE; this._savePreferences(); this.requestUpdate(); }}>
+                <ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 16px;"></ha-icon>
+                Delay
+              </button>
+              <button type="button" class="mode-btn ${isAbsoluteMode ? 'active' : ''}" 
+                @click=${() => { this._timeMode = TIME_MODE_ABSOLUTE; this._savePreferences(); this.requestUpdate(); }}>
+                <ha-icon icon="mdi:clock-outline" style="--mdc-icon-size: 16px;"></ha-icon>
+                Time
+              </button>
             </div>
-            <div class="timer-row">
-              <input type="number" class="timer-input" .value=${String(this._delay)} @input=${(e) => this._delay = parseInt(e.target.value, 10) || 15} min="1">
-              <select class="timer-select" @change=${(e) => { this._unit = e.target.value; this.requestUpdate(); }}>
-                <option value="seconds" ?selected=${this._unit === 'seconds'}>Seconds</option>
-                <option value="minutes" ?selected=${this._unit === 'minutes'}>Minutes</option>
-                <option value="hours" ?selected=${this._unit === 'hours'}>Hours</option>
-              </select>
-              <select class="timer-select" @change=${(e) => this._action = e.target.value}>
-                ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
-              </select>
-            </div>
+            
+            ${!isAbsoluteMode ? html`
+              <!-- Relative Time Mode -->
+              <div class="timer-chips">
+                ${presets[this._unit].map(val => html`
+                  <button type="button" class="timer-chip ${this._delay === val ? 'active' : ''}" 
+                    @click=${() => { this._delay = val; this._savePreferences(); this.requestUpdate(); }}>
+                    ${val}${getUnitLabel(this._unit, true).charAt(0)}
+                  </button>
+                `)}
+              </div>
+              <div class="timer-row">
+                <input type="number" class="timer-input" .value=${String(this._delay)} 
+                  @input=${(e) => { this._delay = parseInt(e.target.value, 10) || 15; this._savePreferences(); }} min="1">
+                <select class="timer-select" @change=${(e) => { this._unit = e.target.value; this._savePreferences(); this.requestUpdate(); }}>
+                  <option value="seconds" ?selected=${this._unit === 'seconds'}>Seconds</option>
+                  <option value="minutes" ?selected=${this._unit === 'minutes'}>Minutes</option>
+                  <option value="hours" ?selected=${this._unit === 'hours'}>Hours</option>
+                </select>
+                <select class="timer-select" @change=${(e) => { this._action = e.target.value; this._savePreferences(); }}>
+                  ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
+                </select>
+              </div>
+            ` : html`
+              <!-- Absolute Time Mode - Time input first, then action -->
+              <div class="timer-row timer-row-absolute">
+                <input type="time" class="timer-input timer-input-time" .value=${this._atTime}
+                  @input=${(e) => { this._atTime = e.target.value; this._savePreferences(); }}>
+                <select class="timer-select timer-select-action" @change=${(e) => { this._action = e.target.value; this._savePreferences(); }}>
+                  ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
+                </select>
+              </div>
+            `}
+            
             <div class="timer-notify">
-              <button type="button" class="notify-icon-btn ${this._notifyHa ? 'active' : ''}" @click=${() => { this._notifyHa = !this._notifyHa; this.requestUpdate(); }} title="HA Notification">
+              <button type="button" class="notify-icon-btn ${this._notifyHa ? 'active' : ''}" 
+                @click=${() => { this._notifyHa = !this._notifyHa; this._savePreferences(); this.requestUpdate(); }} title="HA Notification">
                 <ha-icon icon="mdi:bell${this._notifyHa ? '' : '-off-outline'}"></ha-icon>
               </button>
-              <button type="button" class="notify-icon-btn ${this._notifyMobile ? 'active' : ''}" @click=${() => { this._notifyMobile = !this._notifyMobile; this.requestUpdate(); }} title="Mobile Notification">
+              <button type="button" class="notify-icon-btn ${this._notifyMobile ? 'active' : ''}" 
+                @click=${() => { this._notifyMobile = !this._notifyMobile; this._savePreferences(); this.requestUpdate(); }} title="Mobile Notification">
                 <ha-icon icon="mdi:cellphone${this._notifyMobile ? '-message' : ''}"></ha-icon>
               </button>
             </div>
@@ -1006,10 +1324,12 @@ class QuickTimerCard extends LitElement {
                 <ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 18px;"></ha-icon>
                 ${this._loading ? '...' : 'Schedule'}
               </button>
-              <button class="timer-btn timer-btn-success" @click=${() => this._startSchedule(true)} ?disabled=${this._loading}>
-                <ha-icon icon="mdi:flash" style="--mdc-icon-size: 18px;"></ha-icon>
-                ${this._loading ? '...' : 'Run Now'}
-              </button>
+              ${!isAbsoluteMode ? html`
+                <button class="timer-btn timer-btn-success" @click=${() => this._startSchedule(true)} ?disabled=${this._loading}>
+                  <ha-icon icon="mdi:flash" style="--mdc-icon-size: 18px;"></ha-icon>
+                  ${this._loading ? '...' : 'Run Now'}
+                </button>
+              ` : ''}
             </div>
           </div>
         `}
@@ -1160,6 +1480,8 @@ console.info(
   'color: white; background: #039be5; font-weight: bold; border-radius: 4px 0 0 4px;',
   'color: #039be5; background: white; font-weight: bold; border-radius: 0 4px 4px 0;'
 );
+
+// console.log('[Quick Timer] Features: Absolute time, backend-synced persistence, history presets');
 
 // ============================================
 // Dialog Injection (Collapsible Panel)
@@ -1422,9 +1744,21 @@ class QuickTimerDialogInjector {
     const domainActions = getActionsForDomain(entityId);
     const actionOptionsHtml = domainActions.map(a => `<option value="${a.value}">${a.label}</option>`).join('');
     
+    // Load preferences from cache
+    const prefs = preferencesManager.getFromCache(entityId);
+    const initialTimeMode = prefs.last_time_mode || TIME_MODE_RELATIVE;
+    const initialAction = prefs.last_action || domainActions[0]?.value || 'off';
+    const initialDelay = prefs.last_delay || 15;
+    const initialUnit = prefs.last_unit || 'minutes';
+    const initialAtTime = prefs.last_at_time || getDefaultAbsoluteTime();
+    const initialNotifyHa = prefs.notify_ha || false;
+    const initialNotifyMobile = prefs.notify_mobile || false;
+    const history = prefs.history || [];
+    
     const panel = document.createElement('div');
     panel.id = INJECTED_PANEL_ID;
     panel.dataset.entityId = entityId;
+    panel.dataset.timeMode = initialTimeMode;
     if (hasActiveTask) panel.classList.add('expanded');
     
     panel.innerHTML = `
@@ -1434,23 +1768,44 @@ class QuickTimerDialogInjector {
         #${INJECTED_PANEL_ID} .qt-header:hover { background: var(--secondary-background-color); }
         #${INJECTED_PANEL_ID} .qt-header ha-icon { color: var(--primary-color); --mdc-icon-size: 20px; }
         #${INJECTED_PANEL_ID} .qt-header span { flex: 1; font-weight: 500; font-size: 14px; }
+        #${INJECTED_PANEL_ID} .qt-header .qt-history-btn { --mdc-icon-size: 18px; color: var(--secondary-text-color); cursor: pointer; padding: 4px; border-radius: 50%; transition: all 0.2s; }
+        #${INJECTED_PANEL_ID} .qt-header .qt-history-btn:hover { background: var(--secondary-background-color); color: var(--primary-color); }
+        #${INJECTED_PANEL_ID} .qt-header .qt-history-btn.active { color: var(--primary-color); }
         #${INJECTED_PANEL_ID} .qt-header .qt-chevron { --mdc-icon-size: 20px; color: var(--secondary-text-color); transition: transform 0.2s; }
         #${INJECTED_PANEL_ID}.expanded .qt-header .qt-chevron { transform: rotate(180deg); }
         #${INJECTED_PANEL_ID} .qt-body { display: none; padding: 0 16px 16px; }
         #${INJECTED_PANEL_ID}.expanded .qt-body { display: block; }
+        #${INJECTED_PANEL_ID} .qt-history { display: none; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--divider-color); }
+        #${INJECTED_PANEL_ID} .qt-history.visible { display: block; }
+        #${INJECTED_PANEL_ID} .qt-history-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--secondary-text-color); margin-bottom: 6px; }
+        #${INJECTED_PANEL_ID} .qt-history-items { display: flex; flex-wrap: wrap; gap: 6px; }
+        #${INJECTED_PANEL_ID} .qt-history-chip { padding: 5px 10px; border: 1px solid var(--primary-color); border-radius: 16px; background: rgba(var(--rgb-primary-color), 0.1); color: var(--primary-color); font-size: 11px; cursor: pointer; transition: all 0.2s; }
+        #${INJECTED_PANEL_ID} .qt-history-chip:hover { background: var(--primary-color); color: white; }
         #${INJECTED_PANEL_ID} .qt-countdown { display: ${hasActiveTask ? 'flex' : 'none'}; align-items: center; gap: 12px; padding: 10px; background: rgba(var(--rgb-primary-color), 0.1); border-radius: 10px; margin-bottom: 12px; }
         #${INJECTED_PANEL_ID} .qt-countdown-icon { --mdc-icon-size: 24px; color: var(--primary-color); }
         #${INJECTED_PANEL_ID} .qt-countdown-info { flex: 1; }
         #${INJECTED_PANEL_ID} .qt-countdown-time { font-family: 'Roboto Mono', monospace; font-size: 18px; font-weight: 600; color: var(--primary-color); }
         #${INJECTED_PANEL_ID} .qt-countdown-action { font-size: 11px; color: var(--secondary-text-color); }
         #${INJECTED_PANEL_ID} .qt-controls { display: ${hasActiveTask ? 'none' : 'flex'}; flex-direction: column; gap: 10px; }
+        #${INJECTED_PANEL_ID} .qt-mode-row { display: flex; gap: 6px; }
+        #${INJECTED_PANEL_ID} .qt-mode-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 8px 12px; border: 1px solid var(--divider-color); border-radius: 8px; background: transparent; color: var(--primary-text-color); font-size: 12px; cursor: pointer; transition: all 0.2s; }
+        #${INJECTED_PANEL_ID} .qt-mode-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+        #${INJECTED_PANEL_ID} .qt-mode-btn.active { background: var(--primary-color); color: white; border-color: var(--primary-color); }
+        #${INJECTED_PANEL_ID} .qt-mode-btn ha-icon { --mdc-icon-size: 14px; }
         #${INJECTED_PANEL_ID} .qt-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+        #${INJECTED_PANEL_ID} .qt-chips.hidden { display: none; }
         #${INJECTED_PANEL_ID} .qt-chip { padding: 5px 12px; border: 1px solid var(--divider-color); border-radius: 16px; background: transparent; color: var(--primary-text-color); font-size: 12px; cursor: pointer; transition: all 0.2s; }
         #${INJECTED_PANEL_ID} .qt-chip:hover { background: var(--primary-color); color: white; border-color: var(--primary-color); }
         #${INJECTED_PANEL_ID} .qt-row { display: flex; gap: 8px; align-items: center; }
+        #${INJECTED_PANEL_ID} .qt-row-relative { display: flex; }
+        #${INJECTED_PANEL_ID} .qt-row-relative.hidden { display: none; }
+        #${INJECTED_PANEL_ID} .qt-row-absolute { display: none; align-items: center; }
+        #${INJECTED_PANEL_ID} .qt-row-absolute.visible { display: flex; }
         #${INJECTED_PANEL_ID} .qt-input { flex: 1; padding: 10px 12px; border: 1px solid var(--divider-color); border-radius: 10px; background: var(--input-fill-color, var(--secondary-background-color)); color: var(--primary-text-color); font-size: 15px; min-width: 0; }
         #${INJECTED_PANEL_ID} .qt-input:focus { outline: none; border-color: var(--primary-color); }
-        #${INJECTED_PANEL_ID} .qt-select { padding: 10px 12px; border: 1px solid var(--divider-color); border-radius: 10px; background: var(--input-fill-color, var(--secondary-background-color)); color: var(--primary-text-color); font-size: 13px; cursor: pointer; min-width: 80px; }
+        #${INJECTED_PANEL_ID} .qt-input-time { min-width: 90px; text-align: center; }
+        #${INJECTED_PANEL_ID} .qt-select { padding: 10px 12px; border: 1px solid var(--divider-color); border-radius: 10px; background: var(--input-fill-color, var(--secondary-background-color)); color: var(--primary-text-color); font-size: 13px; cursor: pointer; min-width: 80px; color-scheme: light dark; }
+        #${INJECTED_PANEL_ID} .qt-select option { background: var(--card-background-color, var(--secondary-background-color)); color: var(--primary-text-color); }
         #${INJECTED_PANEL_ID} .qt-notify { display: flex; gap: 8px; }
         #${INJECTED_PANEL_ID} .qt-notify-btn { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid var(--divider-color); border-radius: 50%; background: transparent; color: var(--secondary-text-color); cursor: pointer; transition: all 0.2s; }
         #${INJECTED_PANEL_ID} .qt-notify-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
@@ -1467,9 +1822,14 @@ class QuickTimerDialogInjector {
       <div class="qt-header">
         <ha-icon icon="mdi:timer-outline"></ha-icon>
         <span>Quick Timer</span>
+        ${history.length > 0 ? `<ha-icon class="qt-history-btn" icon="mdi:history" title="History"></ha-icon>` : ''}
         <ha-icon class="qt-chevron" icon="mdi:chevron-down"></ha-icon>
       </div>
       <div class="qt-body">
+        <div class="qt-history">
+          <div class="qt-history-title">Recent</div>
+          <div class="qt-history-items"></div>
+        </div>
         <div class="qt-countdown">
           <ha-icon class="qt-countdown-icon" icon="mdi:timer-sand"></ha-icon>
           <div class="qt-countdown-info">
@@ -1479,24 +1839,36 @@ class QuickTimerDialogInjector {
           <button class="qt-btn qt-btn-cancel">Cancel</button>
         </div>
         <div class="qt-controls">
-          <div class="qt-chips"></div>
-          <div class="qt-row">
-            <input type="number" class="qt-input qt-time-input" value="15" min="1" inputmode="numeric">
+          <div class="qt-mode-row">
+            <button class="qt-mode-btn qt-mode-relative ${initialTimeMode === TIME_MODE_RELATIVE ? 'active' : ''}" data-mode="relative">
+              <ha-icon icon="mdi:timer-outline"></ha-icon>Delay
+            </button>
+            <button class="qt-mode-btn qt-mode-absolute ${initialTimeMode === TIME_MODE_ABSOLUTE ? 'active' : ''}" data-mode="absolute">
+              <ha-icon icon="mdi:clock-outline"></ha-icon>Time
+            </button>
+          </div>
+          <div class="qt-chips ${initialTimeMode === TIME_MODE_ABSOLUTE ? 'hidden' : ''}"></div>
+          <div class="qt-row qt-row-relative ${initialTimeMode === TIME_MODE_ABSOLUTE ? 'hidden' : ''}">
+            <input type="number" class="qt-input qt-time-input" value="${initialDelay}" min="1" inputmode="numeric">
             <select class="qt-select qt-unit-select">
-              <option value="seconds">Sec</option>
-              <option value="minutes" selected>Min</option>
-              <option value="hours">Hrs</option>
+              <option value="seconds" ${initialUnit === 'seconds' ? 'selected' : ''}>Sec</option>
+              <option value="minutes" ${initialUnit === 'minutes' ? 'selected' : ''}>Min</option>
+              <option value="hours" ${initialUnit === 'hours' ? 'selected' : ''}>Hrs</option>
             </select>
             <select class="qt-select qt-action-select">${actionOptionsHtml}</select>
           </div>
+          <div class="qt-row qt-row-absolute ${initialTimeMode === TIME_MODE_ABSOLUTE ? 'visible' : ''}">
+            <input type="time" class="qt-input qt-input-time qt-at-time-input" value="${initialAtTime}">
+            <select class="qt-select qt-action-select-abs">${actionOptionsHtml}</select>
+          </div>
           <div class="qt-row">
             <div class="qt-notify">
-              <button class="qt-notify-btn qt-notify-ha" title="HA Notification"><ha-icon icon="mdi:bell-off-outline"></ha-icon></button>
-              <button class="qt-notify-btn qt-notify-mobile" title="Mobile Notification"><ha-icon icon="mdi:cellphone"></ha-icon></button>
+              <button class="qt-notify-btn qt-notify-ha ${initialNotifyHa ? 'active' : ''}" title="HA Notification"><ha-icon icon="mdi:bell${initialNotifyHa ? '' : '-off-outline'}"></ha-icon></button>
+              <button class="qt-notify-btn qt-notify-mobile ${initialNotifyMobile ? 'active' : ''}" title="Mobile Notification"><ha-icon icon="mdi:cellphone${initialNotifyMobile ? '-message' : ''}"></ha-icon></button>
             </div>
             <div class="qt-buttons">
               <button class="qt-btn qt-btn-primary qt-btn-start"><ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 16px;"></ha-icon>Schedule</button>
-              <button class="qt-btn qt-btn-success qt-btn-flash"><ha-icon icon="mdi:flash" style="--mdc-icon-size: 16px;"></ha-icon>Now</button>
+              <button class="qt-btn qt-btn-success qt-btn-flash ${initialTimeMode === TIME_MODE_ABSOLUTE ? 'hidden' : ''}" style="${initialTimeMode === TIME_MODE_ABSOLUTE ? 'display:none;' : ''}"><ha-icon icon="mdi:flash" style="--mdc-icon-size: 16px;"></ha-icon>Now</button>
             </div>
           </div>
         </div>
@@ -1507,14 +1879,103 @@ class QuickTimerDialogInjector {
     const timeInput = panel.querySelector('.qt-time-input');
     const unitSelect = panel.querySelector('.qt-unit-select');
     const actionSelect = panel.querySelector('.qt-action-select');
+    const actionSelectAbs = panel.querySelector('.qt-action-select-abs');
+    const atTimeInput = panel.querySelector('.qt-at-time-input');
     const chipsContainer = panel.querySelector('.qt-chips');
     const startBtn = panel.querySelector('.qt-btn-start');
     const flashBtn = panel.querySelector('.qt-btn-flash');
     const cancelBtn = panel.querySelector('.qt-btn-cancel');
     const notifyHaBtn = panel.querySelector('.qt-notify-ha');
     const notifyMobileBtn = panel.querySelector('.qt-notify-mobile');
+    const modeRelativeBtn = panel.querySelector('.qt-mode-relative');
+    const modeAbsoluteBtn = panel.querySelector('.qt-mode-absolute');
+    const rowRelative = panel.querySelector('.qt-row-relative');
+    const rowAbsolute = panel.querySelector('.qt-row-absolute');
+    const historyBtn = panel.querySelector('.qt-history-btn');
+    const historySection = panel.querySelector('.qt-history');
+    const historyItems = panel.querySelector('.qt-history-items');
 
-    let notifyHa = false, notifyMobile = false;
+    let notifyHa = initialNotifyHa;
+    let notifyMobile = initialNotifyMobile;
+    let currentTimeMode = initialTimeMode;
+
+    // Set initial action value
+    if (actionSelect) actionSelect.value = initialAction;
+    if (actionSelectAbs) actionSelectAbs.value = initialAction;
+
+    // Populate history
+    if (history.length > 0 && historyItems) {
+      historyItems.innerHTML = history.slice(0, 3).map((entry, idx) => 
+        `<button class="qt-history-chip" data-index="${idx}">${formatHistoryEntry(entry)}</button>`
+      ).join('');
+      
+      historyItems.querySelectorAll('.qt-history-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          const idx = parseInt(chip.dataset.index, 10);
+          const entry = history[idx];
+          if (entry) {
+            if (entry.time_mode === TIME_MODE_ABSOLUTE) {
+              currentTimeMode = TIME_MODE_ABSOLUTE;
+              if (atTimeInput) atTimeInput.value = entry.at_time;
+              if (actionSelectAbs) actionSelectAbs.value = entry.action;
+            } else {
+              currentTimeMode = TIME_MODE_RELATIVE;
+              if (timeInput) timeInput.value = entry.delay;
+              if (unitSelect) unitSelect.value = entry.unit;
+              if (actionSelect) actionSelect.value = entry.action;
+            }
+            updateModeUI();
+            if (historySection) historySection.classList.remove('visible');
+          }
+        });
+      });
+    }
+
+    // Toggle history visibility
+    if (historyBtn) {
+      historyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        historyBtn.classList.toggle('active');
+        historySection.classList.toggle('visible');
+      });
+    }
+
+    const updateModeUI = () => {
+      panel.dataset.timeMode = currentTimeMode;
+      modeRelativeBtn.classList.toggle('active', currentTimeMode === TIME_MODE_RELATIVE);
+      modeAbsoluteBtn.classList.toggle('active', currentTimeMode === TIME_MODE_ABSOLUTE);
+      chipsContainer.classList.toggle('hidden', currentTimeMode === TIME_MODE_ABSOLUTE);
+      rowRelative.classList.toggle('hidden', currentTimeMode === TIME_MODE_ABSOLUTE);
+      rowAbsolute.classList.toggle('visible', currentTimeMode === TIME_MODE_ABSOLUTE);
+      flashBtn.style.display = currentTimeMode === TIME_MODE_ABSOLUTE ? 'none' : '';
+      
+      // Save preference
+      savePrefs();
+    };
+
+    const savePrefs = () => {
+      const hass = this._getHass();
+      if (!hass) return;
+      preferencesManager.savePreferences(hass, entityId, {
+        last_time_mode: currentTimeMode,
+        last_action: currentTimeMode === TIME_MODE_ABSOLUTE ? actionSelectAbs?.value : actionSelect?.value,
+        last_delay: parseInt(timeInput?.value, 10) || 15,
+        last_unit: unitSelect?.value || 'minutes',
+        last_at_time: atTimeInput?.value || getDefaultAbsoluteTime(),
+        notify_ha: notifyHa,
+        notify_mobile: notifyMobile,
+      });
+    };
+
+    // Mode toggle handlers
+    modeRelativeBtn.addEventListener('click', () => {
+      currentTimeMode = TIME_MODE_RELATIVE;
+      updateModeUI();
+    });
+    modeAbsoluteBtn.addEventListener('click', () => {
+      currentTimeMode = TIME_MODE_ABSOLUTE;
+      updateModeUI();
+    });
 
     header.addEventListener('click', () => {
       panel.classList.toggle('expanded');
@@ -1528,8 +1989,8 @@ class QuickTimerDialogInjector {
       btn.querySelector('ha-icon').setAttribute('icon', active ? iconOn : iconOff);
     };
 
-    notifyHaBtn.addEventListener('click', () => { notifyHa = !notifyHa; updateNotifyBtn(notifyHaBtn, notifyHa, 'mdi:bell', 'mdi:bell-off-outline'); });
-    notifyMobileBtn.addEventListener('click', () => { notifyMobile = !notifyMobile; updateNotifyBtn(notifyMobileBtn, notifyMobile, 'mdi:cellphone-message', 'mdi:cellphone'); });
+    notifyHaBtn.addEventListener('click', () => { notifyHa = !notifyHa; updateNotifyBtn(notifyHaBtn, notifyHa, 'mdi:bell', 'mdi:bell-off-outline'); savePrefs(); });
+    notifyMobileBtn.addEventListener('click', () => { notifyMobile = !notifyMobile; updateNotifyBtn(notifyMobileBtn, notifyMobile, 'mdi:cellphone-message', 'mdi:cellphone'); savePrefs(); });
 
     const presetConfig = { seconds: [30, 60, 120, 300], minutes: [5, 15, 30, 60], hours: [1, 2, 4, 8] };
     const unitLabels = { seconds: 's', minutes: 'm', hours: 'h' };
@@ -1539,23 +2000,45 @@ class QuickTimerDialogInjector {
       const presets = presetConfig[currentUnit] || [5, 15, 30, 60];
       const unitShort = unitLabels[currentUnit] || 'm';
       chipsContainer.innerHTML = presets.map(val => `<button class="qt-chip" data-value="${val}">${val}${unitShort}</button>`).join('');
-      chipsContainer.querySelectorAll('.qt-chip').forEach(chip => chip.addEventListener('click', () => timeInput.value = chip.dataset.value));
+      chipsContainer.querySelectorAll('.qt-chip').forEach(chip => chip.addEventListener('click', () => { timeInput.value = chip.dataset.value; savePrefs(); }));
     };
 
     const unitDefaults = { seconds: 30, minutes: 15, hours: 1 };
-    unitSelect.addEventListener('change', () => { timeInput.value = unitDefaults[unitSelect.value] || 15; updatePresets(); });
+    unitSelect.addEventListener('change', () => { timeInput.value = unitDefaults[unitSelect.value] || 15; updatePresets(); savePrefs(); });
     updatePresets();
+
+    // Save on input changes
+    timeInput.addEventListener('input', savePrefs);
+    actionSelect.addEventListener('change', savePrefs);
+    actionSelectAbs.addEventListener('change', savePrefs);
+    atTimeInput.addEventListener('input', savePrefs);
 
     const handleSchedule = async (runNow) => {
       const hass = this._getHass();
       if (!hass) return;
       const btn = runNow ? flashBtn : startBtn;
-      const delay = parseInt(timeInput.value, 10) || 15;
       btn.disabled = true;
       const origContent = btn.innerHTML;
       btn.innerHTML = '...';
+      
       try {
-        await hass.callService('quick_timer', 'run_action', { entity_id: entityId, delay, unit: unitSelect.value, action: actionSelect.value, notify_ha: notifyHa, notify_mobile: notifyMobile, run_now: runNow });
+        const serviceData = {
+          entity_id: entityId,
+          action: currentTimeMode === TIME_MODE_ABSOLUTE ? actionSelectAbs.value : actionSelect.value,
+          notify_ha: notifyHa,
+          notify_mobile: notifyMobile,
+          run_now: runNow,
+          time_mode: currentTimeMode,
+        };
+
+        if (currentTimeMode === TIME_MODE_ABSOLUTE) {
+          serviceData.at_time = atTimeInput.value;
+        } else {
+          serviceData.delay = parseInt(timeInput.value, 10) || 15;
+          serviceData.unit = unitSelect.value;
+        }
+
+        await hass.callService('quick_timer', 'run_action', serviceData);
         btn.innerHTML = '✓';
         if (navigator.vibrate) navigator.vibrate(50);
         setTimeout(() => { btn.innerHTML = origContent; btn.disabled = false; this._updatePanelState(panel, entityId); }, 800);
@@ -1585,6 +2068,65 @@ class QuickTimerDialogInjector {
         setTimeout(() => { cancelBtn.textContent = 'Cancel'; cancelBtn.disabled = false; }, 1500);
       }
     });
+
+    // Try to load preferences from sensor (for cross-device sync)
+    const hass = this._getHass();
+    if (hass) {
+      preferencesManager.updateCacheFromSensor(hass);
+      const prefs = preferencesManager.getFromSensor(hass, entityId);
+      if (prefs && Object.keys(prefs).length > 0) {
+        if (prefs.last_time_mode) {
+          currentTimeMode = prefs.last_time_mode;
+          updateModeUI();
+        }
+        if (prefs.last_action) {
+          if (actionSelect) actionSelect.value = prefs.last_action;
+          if (actionSelectAbs) actionSelectAbs.value = prefs.last_action;
+        }
+        if (prefs.last_delay && timeInput) timeInput.value = prefs.last_delay;
+        if (prefs.last_unit && unitSelect) {
+          unitSelect.value = prefs.last_unit;
+          updatePresets();
+        }
+        if (prefs.last_at_time && atTimeInput) atTimeInput.value = prefs.last_at_time;
+        if (prefs.notify_ha !== undefined) {
+          notifyHa = prefs.notify_ha;
+          updateNotifyBtn(notifyHaBtn, notifyHa, 'mdi:bell', 'mdi:bell-off-outline');
+        }
+        if (prefs.notify_mobile !== undefined) {
+          notifyMobile = prefs.notify_mobile;
+          updateNotifyBtn(notifyMobileBtn, notifyMobile, 'mdi:cellphone-message', 'mdi:cellphone');
+        }
+        if (prefs.history && prefs.history.length > 0 && historyItems) {
+          historyItems.innerHTML = prefs.history.slice(0, 3).map((entry, idx) => 
+            `<button class="qt-history-chip" data-index="${idx}">${formatHistoryEntry(entry)}</button>`
+          ).join('');
+          
+          historyItems.querySelectorAll('.qt-history-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+              const idx = parseInt(chip.dataset.index, 10);
+              const entry = prefs.history[idx];
+              if (entry) {
+                if (entry.time_mode === TIME_MODE_ABSOLUTE) {
+                  currentTimeMode = TIME_MODE_ABSOLUTE;
+                  if (atTimeInput) atTimeInput.value = entry.at_time;
+                  if (actionSelectAbs) actionSelectAbs.value = entry.action;
+                } else {
+                  currentTimeMode = TIME_MODE_RELATIVE;
+                  if (timeInput) timeInput.value = entry.delay;
+                  if (unitSelect) unitSelect.value = entry.unit;
+                  if (actionSelect) actionSelect.value = entry.action;
+                }
+                updateModeUI();
+                if (historySection) historySection.classList.remove('visible');
+              }
+            });
+          });
+          
+          if (historyBtn) historyBtn.style.display = '';
+        }
+      }
+    }
 
     target.appendChild(panel);
     console.log(`[Quick Timer] Panel injected for ${entityId}`);
