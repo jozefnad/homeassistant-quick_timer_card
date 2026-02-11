@@ -38,6 +38,8 @@ const DEFAULT_CONFIG = {
   default_unit: 'minutes',
   default_action: 'off',
   default_time_mode: TIME_MODE_RELATIVE,
+  default_at_time: '',
+  default_run_now: false,
   mode: 'compact',
   show_state: true,
   show_badge: true,
@@ -97,6 +99,7 @@ const ICON_OPTIONS = [
 
 const ACTION_TYPES = {
   'toggle-timer': 'Start/Cancel Timer',
+  'run-now': 'Run Now (Immediate + Reverse)',
   'toggle-entity': 'Toggle Entity',
   'turn-on': 'Turn On Entity',
   'turn-off': 'Turn Off Entity',
@@ -413,8 +416,9 @@ class QuickTimerCardEditor extends LitElement {
       .editor-row:last-child { margin-bottom: 0; }
       .editor-row label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 12px; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: 0.5px; }
       ha-selector, ha-select, ha-textfield { width: 100%; display: block; }
-      .inline-row { display: flex; gap: 12px; }
-      .inline-row > * { flex: 1; }
+      .inline-row { display: flex; gap: 12px; flex-wrap: wrap; }
+      .inline-row > * { flex: 1; min-width: 120px; }
+      @media (max-width: 400px) { .inline-row { flex-direction: column; } .inline-row > * { min-width: 100%; } }
       .switch-row { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
       .switch-row label { margin-bottom: 0; flex: 1; }
       .custom-select { position: relative; width: 100%; }
@@ -432,11 +436,11 @@ class QuickTimerCardEditor extends LitElement {
       .custom-select-item ha-icon { --mdc-icon-size: 20px; color: var(--primary-text-color); }
       .custom-select-item .color-dot { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--divider-color); }
       .custom-select-item span { flex: 1; font-size: 14px; }
-      .action-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--divider-color); }
+      .action-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--divider-color); flex-wrap: wrap; }
       .action-row:last-child { border-bottom: none; }
       .action-row .action-icon { --mdc-icon-size: 20px; color: var(--secondary-text-color); }
-      .action-row .action-label { flex: 1; font-size: 13px; color: var(--primary-text-color); }
-      .action-row ha-select { width: 180px; flex: none; }
+      .action-row .action-label { flex: 1; font-size: 13px; color: var(--primary-text-color); min-width: 80px; }
+      .action-row ha-select { width: 180px; flex-shrink: 0; }
     `;
   }
 
@@ -489,25 +493,45 @@ class QuickTimerCardEditor extends LitElement {
         <label>Name (optional)</label>
         <ha-textfield .value=${this._config.name || ''} @input=${(e) => this._valueChanged('name', e.target.value)} placeholder="Auto from entity"></ha-textfield>
       </div>
+      <div class="editor-row">
+        <label>Default Action</label>
+        <ha-select .value=${this._config.default_action || getDefaultActionForDomain(this._config.entity)} @selected=${(e) => this._valueChanged('default_action', e.target.value)} @closed=${(e) => e.stopPropagation()} fixedMenuPosition>
+          ${getActionsForDomain(this._config.entity).map(action => html`<ha-list-item value="${action.value}">${action.label}</ha-list-item>`)}
+        </ha-select>
+      </div>
       <div class="inline-row">
         <div class="editor-row">
-          <label>Default Action</label>
-          <ha-select .value=${this._config.default_action || getDefaultActionForDomain(this._config.entity)} @selected=${(e) => this._valueChanged('default_action', e.target.value)} @closed=${(e) => e.stopPropagation()} fixedMenuPosition>
-            ${getActionsForDomain(this._config.entity).map(action => html`<ha-list-item value="${action.value}">${action.label}</ha-list-item>`)}
+          <label>Time Mode</label>
+          <ha-select .value=${this._config.default_time_mode || TIME_MODE_RELATIVE} @selected=${(e) => this._valueChanged('default_time_mode', e.target.value)} @closed=${(e) => e.stopPropagation()} fixedMenuPosition>
+            <ha-list-item value="relative">Delay (Relative)</ha-list-item>
+            <ha-list-item value="absolute">Time (Absolute)</ha-list-item>
           </ha-select>
         </div>
-        <div class="editor-row">
-          <label>Time Unit</label>
-          <ha-select .value=${this._config.default_unit || 'minutes'} @selected=${(e) => this._valueChanged('default_unit', e.target.value)} @closed=${(e) => e.stopPropagation()} fixedMenuPosition>
-            <ha-list-item value="seconds">Seconds</ha-list-item>
-            <ha-list-item value="minutes">Minutes</ha-list-item>
-            <ha-list-item value="hours">Hours</ha-list-item>
-          </ha-select>
-        </div>
+        ${(this._config.default_time_mode || TIME_MODE_RELATIVE) === TIME_MODE_RELATIVE ? html`
+          <div class="editor-row">
+            <label>Time Unit</label>
+            <ha-select .value=${this._config.default_unit || 'minutes'} @selected=${(e) => this._valueChanged('default_unit', e.target.value)} @closed=${(e) => e.stopPropagation()} fixedMenuPosition>
+              <ha-list-item value="seconds">Seconds</ha-list-item>
+              <ha-list-item value="minutes">Minutes</ha-list-item>
+              <ha-list-item value="hours">Hours</ha-list-item>
+            </ha-select>
+          </div>
+        ` : ''}
       </div>
-      <div class="editor-row">
-        <label>Default Time</label>
-        <ha-textfield type="number" .value=${String(this._config.default_delay || 15)} @input=${(e) => this._valueChanged('default_delay', parseInt(e.target.value, 10) || 15)} min="1" max="9999"></ha-textfield>
+      ${(this._config.default_time_mode || TIME_MODE_RELATIVE) === TIME_MODE_RELATIVE ? html`
+        <div class="editor-row">
+          <label>Default Delay</label>
+          <ha-textfield type="number" .value=${String(this._config.default_delay || 15)} @input=${(e) => this._valueChanged('default_delay', parseInt(e.target.value, 10) || 15)} min="1" max="9999"></ha-textfield>
+        </div>
+      ` : html`
+        <div class="editor-row">
+          <label>Default Time (HH:MM)</label>
+          <ha-textfield type="time" .value=${this._config.default_at_time || ''} @input=${(e) => this._valueChanged('default_at_time', e.target.value)} placeholder="e.g. 17:30"></ha-textfield>
+        </div>
+      `}
+      <div class="editor-row switch-row">
+        <label>Default Run Now Mode</label>
+        <ha-switch .checked=${this._config.default_run_now === true} @change=${(e) => this._valueChanged('default_run_now', e.target.checked)}></ha-switch>
       </div>
       <div class="inline-row">
         <div class="editor-row switch-row">
@@ -655,6 +679,7 @@ class QuickTimerCard extends LitElement {
       _action: { type: String },
       _timeMode: { type: String },
       _atTime: { type: String },
+      _runNow: { type: Boolean },
       _isScheduled: { type: Boolean },
       _remainingSeconds: { type: Number },
       _endTimestamp: { type: Number },
@@ -675,6 +700,7 @@ class QuickTimerCard extends LitElement {
     this._action = 'off';
     this._timeMode = TIME_MODE_RELATIVE;
     this._atTime = getDefaultAbsoluteTime();
+    this._runNow = false;
     this._isScheduled = false;
     this._remainingSeconds = 0;
     this._endTimestamp = 0;
@@ -793,7 +819,8 @@ class QuickTimerCard extends LitElement {
     this._unit = this.config.default_unit || 'minutes';
     this._action = this.config.default_action || getDefaultActionForDomain(config.entity);
     this._timeMode = this.config.default_time_mode || TIME_MODE_RELATIVE;
-    this._atTime = getDefaultAbsoluteTime();
+    this._atTime = this.config.default_at_time || getDefaultAbsoluteTime();
+    this._runNow = this.config.default_run_now === true;
     this._notifyHa = this.config.notify_ha === true;
     this._notifyMobile = this.config.notify_mobile === true;
     this._prefsLoaded = false;
@@ -827,57 +854,56 @@ class QuickTimerCard extends LitElement {
   }
 
   _loadPreferencesFromSensor() {
+    // Cards do NOT sync from backend - they use their own configuration.
+    // Only the injected dialog panel uses backend sync for cross-device preferences.
+    // This allows multiple cards with the same entity to have different default values.
     if (!this.hass || !this.config?.entity) return;
     
-    // Skip loading from sensor for 2 seconds after saving to avoid race condition
-    // (sensor may still have old data while backend is processing the save)
-    const timeSinceLastSave = Date.now() - this._lastSaveTimestamp;
-    if (timeSinceLastSave < 2000) {
-      console.log('[Quick Timer] Skipping sensor load - recent save in progress');
-      return;
-    }
-    
-    // Always sync from sensor (for cross-device sync)
+    // Only load history from sensor for card (not the timer values)
     preferencesManager.updateCacheFromSensor(this.hass);
     const prefs = preferencesManager.getFromSensor(this.hass, this.config.entity);
     
-    // console.log('[Quick Timer] Loading preferences from sensor for', this.config.entity, ':', prefs);
-    
     if (prefs && Object.keys(prefs).length > 0) {
-      // Check if we should update (first load OR settings dialog is closed)
-      // We DON'T update while user is actively editing in settings dialog
-      if (!this._prefsLoaded || !this._showSettings) {
-        // Only apply if values are different (to avoid overwriting user's current edits)
-        if (!this._showSettings) {
-          if (prefs.last_action && prefs.last_action !== this._action) this._action = prefs.last_action;
-          if (prefs.last_time_mode && prefs.last_time_mode !== this._timeMode) this._timeMode = prefs.last_time_mode;
-          if (prefs.last_delay && prefs.last_delay !== this._delay) this._delay = prefs.last_delay;
-          if (prefs.last_unit && prefs.last_unit !== this._unit) this._unit = prefs.last_unit;
-          if (prefs.last_at_time && prefs.last_at_time !== this._atTime) this._atTime = prefs.last_at_time;
-          if (prefs.notify_ha !== undefined && prefs.notify_ha !== this._notifyHa) this._notifyHa = prefs.notify_ha;
-          if (prefs.notify_mobile !== undefined && prefs.notify_mobile !== this._notifyMobile) this._notifyMobile = prefs.notify_mobile;
-        }
-        this._prefsLoaded = true;
-        // console.log('[Quick Timer] Applied preferences: action=', this._action, 'timeMode=', this._timeMode, 'atTime=', this._atTime);
-      }
-      // Always update history from sensor (it may have been updated from another device)
+      // Only update history from sensor (it may have been updated from another device)
       if (prefs.history) this._history = prefs.history;
     }
+    this._prefsLoaded = true;
   }
 
   _savePreferences() {
-    if (!this.hass || !this.config?.entity) return;
-    // Mark timestamp to prevent race condition - ignore sensor updates for 2 seconds after save
-    this._lastSaveTimestamp = Date.now();
-    preferencesManager.savePreferences(this.hass, this.config.entity, {
-      last_action: this._action,
-      last_time_mode: this._timeMode,
-      last_delay: this._delay,
-      last_unit: this._unit,
-      last_at_time: this._atTime,
+    // Cards do NOT sync to backend - they maintain their own local state.
+    // Only the injected dialog panel uses backend sync for cross-device preferences.
+    // The card's default values come from card configuration, not backend.
+    // No-op for cards - values are already stored in component state.
+  }
+
+  _saveToCardConfig() {
+    // Save current values as new defaults in the card configuration.
+    // This updates the card config so the values persist across dashboard reloads.
+    if (!this.config) return;
+    
+    const newConfig = {
+      ...this.config,
+      default_delay: this._delay,
+      default_unit: this._unit,
+      default_action: this._action,
+      default_time_mode: this._timeMode,
+      default_at_time: this._atTime,
+      default_run_now: this._runNow,
       notify_ha: this._notifyHa,
       notify_mobile: this._notifyMobile,
+    };
+    
+    // Fire config-changed event to update the card configuration
+    const event = new CustomEvent('config-changed', {
+      detail: { config: newConfig },
+      bubbles: true,
+      composed: true,
     });
+    this.dispatchEvent(event);
+    
+    // Update local config reference
+    this.config = newConfig;
   }
 
   _checkScheduledTask() {
@@ -925,6 +951,7 @@ class QuickTimerCard extends LitElement {
     const action = actionConfig?.action || 'none';
     switch (action) {
       case 'toggle-timer': this._isScheduled ? await this._cancelSchedule() : await this._startSchedule(false); break;
+      case 'run-now': this._isScheduled ? await this._cancelSchedule() : await this._startSchedule(true); break;
       case 'toggle-entity': await this._toggleEntity(); break;
       case 'turn-on': await this._callEntityService('turn_on'); break;
       case 'turn-off': await this._callEntityService('turn_off'); break;
@@ -1112,12 +1139,12 @@ class QuickTimerCard extends LitElement {
               <!-- Time Mode Toggle -->
               <div class="timer-mode-row">
                 <button type="button" class="mode-btn ${!isAbsoluteMode ? 'active' : ''}" 
-                  @click=${() => { this._timeMode = TIME_MODE_RELATIVE; this._savePreferences(); this.requestUpdate(); }}>
+                  @click=${() => { this._timeMode = TIME_MODE_RELATIVE; this._saveToCardConfig(); this.requestUpdate(); }}>
                   <ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 16px;"></ha-icon>
                   Delay
                 </button>
                 <button type="button" class="mode-btn ${isAbsoluteMode ? 'active' : ''}" 
-                  @click=${() => { this._timeMode = TIME_MODE_ABSOLUTE; this._savePreferences(); this.requestUpdate(); }}>
+                  @click=${() => { this._timeMode = TIME_MODE_ABSOLUTE; this._saveToCardConfig(); this.requestUpdate(); }}>
                   <ha-icon icon="mdi:clock-outline" style="--mdc-icon-size: 16px;"></ha-icon>
                   Time
                 </button>
@@ -1128,20 +1155,20 @@ class QuickTimerCard extends LitElement {
                 <div class="timer-chips">
                   ${presets[this._unit].map(val => html`
                     <button type="button" class="timer-chip ${this._delay === val ? 'active' : ''}" 
-                      @click=${() => { this._delay = val; this._savePreferences(); this.requestUpdate(); }}>
+                      @click=${() => { this._delay = val; this._saveToCardConfig(); this.requestUpdate(); }}>
                       ${val}${getUnitLabel(this._unit, true).charAt(0)}
                     </button>
                   `)}
                 </div>
                 <div class="timer-row">
                   <input type="number" name="delay" class="timer-input" .value=${String(this._delay)} min="1"
-                    @input=${(e) => { this._delay = parseInt(e.target.value, 10) || 15; this._savePreferences(); }}>
-                  <select name="unit" class="timer-select" @change=${(e) => { this._unit = e.target.value; this._savePreferences(); this.requestUpdate(); }}>
+                    @input=${(e) => { this._delay = parseInt(e.target.value, 10) || 15; this._saveToCardConfig(); }}>
+                  <select name="unit" class="timer-select" @change=${(e) => { this._unit = e.target.value; this._saveToCardConfig(); this.requestUpdate(); }}>
                     <option value="seconds" ?selected=${this._unit === 'seconds'}>Seconds</option>
                     <option value="minutes" ?selected=${this._unit === 'minutes'}>Minutes</option>
                     <option value="hours" ?selected=${this._unit === 'hours'}>Hours</option>
                   </select>
-                  <select name="action" class="timer-select" @change=${(e) => { this._action = e.target.value; this._savePreferences(); }}>
+                  <select name="action" class="timer-select" @change=${(e) => { this._action = e.target.value; this._saveToCardConfig(); }}>
                     ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
                   </select>
                 </div>
@@ -1149,8 +1176,8 @@ class QuickTimerCard extends LitElement {
                 <!-- Absolute Time Mode - Time input first, then action -->
                 <div class="timer-row timer-row-absolute">
                   <input type="time" name="atTime" class="timer-input timer-input-time" .value=${this._atTime}
-                    @input=${(e) => { this._atTime = e.target.value; this._savePreferences(); }}>
-                  <select name="action" class="timer-select timer-select-action" @change=${(e) => { this._action = e.target.value; this._savePreferences(); }}>
+                    @input=${(e) => { this._atTime = e.target.value; this._saveToCardConfig(); }}>
+                  <select name="action" class="timer-select timer-select-action" @change=${(e) => { this._action = e.target.value; this._saveToCardConfig(); }}>
                     ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
                   </select>
                 </div>
@@ -1158,18 +1185,27 @@ class QuickTimerCard extends LitElement {
               
               <div class="timer-notify">
                 <button type="button" class="notify-icon-btn ${this._notifyHa ? 'active' : ''}" 
-                  @click=${() => { this._notifyHa = !this._notifyHa; this._savePreferences(); this.requestUpdate(); }} title="HA Notification">
+                  @click=${() => { this._notifyHa = !this._notifyHa; this._saveToCardConfig(); this.requestUpdate(); }} title="HA Notification">
                   <ha-icon icon="mdi:bell${this._notifyHa ? '' : '-off-outline'}"></ha-icon>
                 </button>
                 <button type="button" class="notify-icon-btn ${this._notifyMobile ? 'active' : ''}" 
-                  @click=${() => { this._notifyMobile = !this._notifyMobile; this._savePreferences(); this.requestUpdate(); }} title="Mobile Notification">
+                  @click=${() => { this._notifyMobile = !this._notifyMobile; this._saveToCardConfig(); this.requestUpdate(); }} title="Mobile Notification">
                   <ha-icon icon="mdi:cellphone${this._notifyMobile ? '-message' : ''}"></ha-icon>
                 </button>
               </div>
             </div>
+            <div class="timer-buttons" style="margin-top: 8px;">
+              <button type="button" class="timer-btn timer-btn-primary" @click=${(e) => { e.preventDefault(); this._saveToCardConfig(); this._startSchedule(false); this._closeSettings(); }} ?disabled=${this._loading}>
+                <ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 16px;"></ha-icon>
+                ${this._loading ? '...' : 'Schedule'}
+              </button>
+              <button type="button" class="timer-btn timer-btn-success" @click=${(e) => { e.preventDefault(); this._saveToCardConfig(); this._startSchedule(true); this._closeSettings(); }} ?disabled=${this._loading}>
+                <ha-icon icon="mdi:flash" style="--mdc-icon-size: 16px;"></ha-icon>
+                ${this._loading ? '...' : 'Run Now'}
+              </button>
+            </div>
             <div class="settings-actions">
-              <button type="button" class="settings-btn settings-btn-cancel" @click=${this._closeSettings}>Cancel</button>
-              <button type="submit" class="settings-btn settings-btn-save">Schedule</button>
+              <button type="button" class="settings-btn settings-btn-cancel" @click=${this._closeSettings}>Close</button>
             </div>
           </form>
         </div>
@@ -1187,7 +1223,7 @@ class QuickTimerCard extends LitElement {
       this._unit = entry.unit;
     }
     this._showHistory = false;
-    this._savePreferences();
+    this._saveToCardConfig();
     this.requestUpdate();
   }
 
@@ -1265,12 +1301,12 @@ class QuickTimerCard extends LitElement {
             <!-- Time Mode Toggle -->
             <div class="timer-mode-row">
               <button type="button" class="mode-btn ${!isAbsoluteMode ? 'active' : ''}" 
-                @click=${() => { this._timeMode = TIME_MODE_RELATIVE; this._savePreferences(); this.requestUpdate(); }}>
+                @click=${() => { this._timeMode = TIME_MODE_RELATIVE; this._saveToCardConfig(); this.requestUpdate(); }}>
                 <ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 16px;"></ha-icon>
                 Delay
               </button>
               <button type="button" class="mode-btn ${isAbsoluteMode ? 'active' : ''}" 
-                @click=${() => { this._timeMode = TIME_MODE_ABSOLUTE; this._savePreferences(); this.requestUpdate(); }}>
+                @click=${() => { this._timeMode = TIME_MODE_ABSOLUTE; this._saveToCardConfig(); this.requestUpdate(); }}>
                 <ha-icon icon="mdi:clock-outline" style="--mdc-icon-size: 16px;"></ha-icon>
                 Time
               </button>
@@ -1281,20 +1317,20 @@ class QuickTimerCard extends LitElement {
               <div class="timer-chips">
                 ${presets[this._unit].map(val => html`
                   <button type="button" class="timer-chip ${this._delay === val ? 'active' : ''}" 
-                    @click=${() => { this._delay = val; this._savePreferences(); this.requestUpdate(); }}>
+                    @click=${() => { this._delay = val; this._saveToCardConfig(); this.requestUpdate(); }}>
                     ${val}${getUnitLabel(this._unit, true).charAt(0)}
                   </button>
                 `)}
               </div>
               <div class="timer-row">
                 <input type="number" class="timer-input" .value=${String(this._delay)} 
-                  @input=${(e) => { this._delay = parseInt(e.target.value, 10) || 15; this._savePreferences(); }} min="1">
-                <select class="timer-select" @change=${(e) => { this._unit = e.target.value; this._savePreferences(); this.requestUpdate(); }}>
+                  @input=${(e) => { this._delay = parseInt(e.target.value, 10) || 15; this._saveToCardConfig(); }} min="1">
+                <select class="timer-select" @change=${(e) => { this._unit = e.target.value; this._saveToCardConfig(); this.requestUpdate(); }}>
                   <option value="seconds" ?selected=${this._unit === 'seconds'}>Seconds</option>
                   <option value="minutes" ?selected=${this._unit === 'minutes'}>Minutes</option>
                   <option value="hours" ?selected=${this._unit === 'hours'}>Hours</option>
                 </select>
-                <select class="timer-select" @change=${(e) => { this._action = e.target.value; this._savePreferences(); }}>
+                <select class="timer-select" @change=${(e) => { this._action = e.target.value; this._saveToCardConfig(); }}>
                   ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
                 </select>
               </div>
@@ -1302,8 +1338,8 @@ class QuickTimerCard extends LitElement {
               <!-- Absolute Time Mode - Time input first, then action -->
               <div class="timer-row timer-row-absolute">
                 <input type="time" class="timer-input timer-input-time" .value=${this._atTime}
-                  @input=${(e) => { this._atTime = e.target.value; this._savePreferences(); }}>
-                <select class="timer-select timer-select-action" @change=${(e) => { this._action = e.target.value; this._savePreferences(); }}>
+                  @input=${(e) => { this._atTime = e.target.value; this._saveToCardConfig(); }}>
+                <select class="timer-select timer-select-action" @change=${(e) => { this._action = e.target.value; this._saveToCardConfig(); }}>
                   ${domainActions.map(action => html`<option value="${action.value}" ?selected=${this._action === action.value}>${action.label}</option>`)}
                 </select>
               </div>
@@ -1311,25 +1347,23 @@ class QuickTimerCard extends LitElement {
             
             <div class="timer-notify">
               <button type="button" class="notify-icon-btn ${this._notifyHa ? 'active' : ''}" 
-                @click=${() => { this._notifyHa = !this._notifyHa; this._savePreferences(); this.requestUpdate(); }} title="HA Notification">
+                @click=${() => { this._notifyHa = !this._notifyHa; this._saveToCardConfig(); this.requestUpdate(); }} title="HA Notification">
                 <ha-icon icon="mdi:bell${this._notifyHa ? '' : '-off-outline'}"></ha-icon>
               </button>
               <button type="button" class="notify-icon-btn ${this._notifyMobile ? 'active' : ''}" 
-                @click=${() => { this._notifyMobile = !this._notifyMobile; this._savePreferences(); this.requestUpdate(); }} title="Mobile Notification">
+                @click=${() => { this._notifyMobile = !this._notifyMobile; this._saveToCardConfig(); this.requestUpdate(); }} title="Mobile Notification">
                 <ha-icon icon="mdi:cellphone${this._notifyMobile ? '-message' : ''}"></ha-icon>
               </button>
             </div>
             <div class="timer-buttons">
-              <button class="timer-btn timer-btn-primary" @click=${() => this._startSchedule(false)} ?disabled=${this._loading}>
+              <button class="timer-btn timer-btn-primary" @click=${() => { this._saveToCardConfig(); this._startSchedule(false); }} ?disabled=${this._loading}>
                 <ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 18px;"></ha-icon>
                 ${this._loading ? '...' : 'Schedule'}
               </button>
-              ${!isAbsoluteMode ? html`
-                <button class="timer-btn timer-btn-success" @click=${() => this._startSchedule(true)} ?disabled=${this._loading}>
-                  <ha-icon icon="mdi:flash" style="--mdc-icon-size: 18px;"></ha-icon>
-                  ${this._loading ? '...' : 'Run Now'}
-                </button>
-              ` : ''}
+              <button class="timer-btn timer-btn-success" @click=${() => { this._saveToCardConfig(); this._startSchedule(true); }} ?disabled=${this._loading}>
+                <ha-icon icon="mdi:flash" style="--mdc-icon-size: 18px;"></ha-icon>
+                ${this._loading ? '...' : 'Run Now'}
+              </button>
             </div>
           </div>
         `}
@@ -1868,7 +1902,7 @@ class QuickTimerDialogInjector {
             </div>
             <div class="qt-buttons">
               <button class="qt-btn qt-btn-primary qt-btn-start"><ha-icon icon="mdi:timer-outline" style="--mdc-icon-size: 16px;"></ha-icon>Schedule</button>
-              <button class="qt-btn qt-btn-success qt-btn-flash ${initialTimeMode === TIME_MODE_ABSOLUTE ? 'hidden' : ''}" style="${initialTimeMode === TIME_MODE_ABSOLUTE ? 'display:none;' : ''}"><ha-icon icon="mdi:flash" style="--mdc-icon-size: 16px;"></ha-icon>Now</button>
+              <button class="qt-btn qt-btn-success qt-btn-flash"><ha-icon icon="mdi:flash" style="--mdc-icon-size: 16px;"></ha-icon>Now</button>
             </div>
           </div>
         </div>
@@ -1947,7 +1981,7 @@ class QuickTimerDialogInjector {
       chipsContainer.classList.toggle('hidden', currentTimeMode === TIME_MODE_ABSOLUTE);
       rowRelative.classList.toggle('hidden', currentTimeMode === TIME_MODE_ABSOLUTE);
       rowAbsolute.classList.toggle('visible', currentTimeMode === TIME_MODE_ABSOLUTE);
-      flashBtn.style.display = currentTimeMode === TIME_MODE_ABSOLUTE ? 'none' : '';
+      // Run Now button is now always visible for both modes
       
       // Save preference
       savePrefs();
