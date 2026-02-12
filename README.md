@@ -4,6 +4,10 @@
 [![GitHub Release](https://img.shields.io/github/release/jozefnad/homeassistant-quick_timer_card.svg)](https://github.com/jozefnad/homeassistant-quick_timer_card/releases)
 [![License](https://img.shields.io/github/license/jozefnad/homeassistant-quick_timer_card.svg)](LICENSE)
 
+If you find this integration useful, you can buy me a beer to help keep development going.
+
+[![Buy me a beer](https://img.shields.io/badge/Donate-Buy%20me%20a%20beer-yellow?style=for-the-badge&logo=buy-me-a-coffee)](https://www.buymeacoffee.com/jozefnad)
+
 **Quick Timer Card** is a custom Lovelace card for Home Assistant that provides an elegant UI for scheduling one-time actions with countdown timers.
 
 > ⚠️ **Requirement:** This card requires the [Quick Timer integration](https://github.com/jozefnad/homeassistant-quick_timer) to be installed and configured.
