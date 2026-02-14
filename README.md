@@ -1,5 +1,9 @@
 ﻿# Quick Timer Card
 
+## ⚠️ DEPRECATED
+
+This card is deprecated as of core v2.0.0, which has integrated the card functionality in itself.
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/release/jozefnad/homeassistant-quick_timer_card.svg)](https://github.com/jozefnad/homeassistant-quick_timer_card/releases)
 [![License](https://img.shields.io/github/license/jozefnad/homeassistant-quick_timer_card.svg)](LICENSE)
